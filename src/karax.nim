@@ -263,6 +263,9 @@ proc setRenderer*(renderer: proc (): VNode) =
   dorender = renderer
   window.onload = init
 
+
+var redrawIgnore* = false
+
 proc addEventHandler*(n: VNode; k: EventKind; action: EventHandler) =
   ## Implements the foundation of Karax's event management.
   ## Karax DSL transforms ``tag(onEvent = handler)`` to
@@ -271,7 +274,8 @@ proc addEventHandler*(n: VNode; k: EventKind; action: EventHandler) =
   ## a ``redraw``.
   proc wrapper(ev: Event; n: VNode) =
     action(ev, n)
-    redraw()
+    if redrawIgnore:
+      redraw()
   addEventListener(n, k, wrapper)
 
 proc setOnHashChange*(action: proc (hashPart: cstring)) =
