@@ -1,11 +1,14 @@
 ## Karax -- Single page applications for Nim.
 
-import kdom, vdom, jstrutils, compact, jdict, vstyles
+import kdom, vdom, jstrutils, compact, jdict, vstyles, jsffi
 
 export kdom.Event
 
 proc kout*[T](x: T) {.importc: "console.log", varargs.}
   ## the preferred way of debugging karax applications.
+
+proc consoleTime*(label: cstring) {.importcpp: "console.time(#)".}
+proc consoleEnd*(label: cstring) {.importcpp: "console.timeEnd(#)".}
 
 type
   PatchKind = enum
@@ -161,7 +164,8 @@ proc vnodeToDom*(n: VNode; kxi: KaraxInstance): Node =
   #  result.key = n.key
   for k, v in attrs(n):
     if v != nil:
-      result.setAttr(k, v)
+      cast[JsAssoc[cstring, cstring]](result)[k] = v
+      # result.setAttr(k, v)
   applyEvents(n, kxi)
   if n == kxi.toFocusV and kxi.toFocus.isNil:
     kxi.toFocus = result
@@ -550,12 +554,18 @@ proc runDiff*(kxi: KaraxInstance; oldNode, newNode: VNode) =
     kxi.currentTree = newNode
   doAssert same(kxi.currentTree, document.getElementById(kxi.rootId))
 
+var a = 0
+var requested = false
+var afterRedraw*: proc: void
+
 proc dodraw(kxi: KaraxInstance) =
+  requested = false
   if kxi.renderer.isNil: return
   let newtree = kxi.renderer()
   inc kxi.runCount
   newtree.id = kxi.rootId
   kxi.toFocus = nil
+  consoleEnd(cstring("redraw" & $(a - 1)))
   if kxi.currentTree == nil:
     let asdom = vnodeToDom(newtree, kxi)
     replaceById(kxi.rootId, asdom)
@@ -583,6 +593,9 @@ proc dodraw(kxi: KaraxInstance) =
   if kxi.toFocus != nil:
     kxi.toFocus.focus()
   kxi.renderId = 0
+  if not afterRedraw.isNil:
+    afterRedraw()
+    afterRedraw = nil
   when defined(stats):
     kxi.recursion = 0
     var total = 0
@@ -593,6 +606,10 @@ proc cancelFrame(id: int) {.importc: "window.cancelAnimationFrame".}
 
 proc redraw*(kxi: KaraxInstance = kxi) =
   # we buffer redraw requests:
+  if requested:
+    return
+  consoleTime(cstring("redraw" & $a))
+  inc a
   when false:
     if drawTimeout != nil:
       clearTimeout(drawTimeout)
