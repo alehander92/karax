@@ -1,5 +1,5 @@
 
-import kdom, macros
+import kdom, macros, jsffi
 
 type
   StyleAttr* {.pure.} = enum

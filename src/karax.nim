@@ -1,11 +1,16 @@
 ## Karax -- Single page applications for Nim.
 
-import kdom, vdom, jstrutils, components, jdict, vstyles
+import kdom, vdom, jstrutils, components, jdict, vstyles, jsffi
 
 export kdom.Event
 
 proc kout*[T](x: T) {.importc: "console.log", varargs.}
   ## the preferred way of debugging karax applications.
+
+
+proc consoleTime*(label: cstring) {.importcpp: "console.time(#)".}
+proc consoleEnd*(label: cstring) {.importcpp: "console.timeEnd(#)".}
+
 
 proc hasProp(e: Node; prop: cstring): bool {.importcpp: "(#.hasOwnProperty(#))".}
 proc rawkey(e: Node): VKey {.importcpp: "#.karaxKey", nodecl.}
@@ -263,7 +268,12 @@ proc updateElement(parent, current: Node, newNode, oldNode: VNode) =
 when false:
   var drawTimeout: Timeout
 
+var a = 0
+var requested = false
+var afterRedraw*: proc: void
+
 proc dodraw() =
+  requested = false
   if dorender.isNil: return
   let newtree = dorender()
   newtree.id = "ROOT"
@@ -281,17 +291,25 @@ proc dodraw() =
       someDirty = false
     currentTree = newtree
 
+  if not afterRedraw.isNil:
+    afterRedraw()
+    afterRedraw = nil
   if not postRenderCallback.isNil:
     postRenderCallback()
 
   # now that it's part of the DOM, give it the focus:
   if toFocus != nil:
     toFocus.focus()
+  consoleEnd(cstring("redraw" & $(a - 1)))
 
 proc reqFrame(callback: proc()) {.importc: "window.requestAnimationFrame".}
 
 proc redraw*() =
   # we buffer redraw requests:
+  if requested:
+    return
+  consoleTime(cstring("redraw" & $a))
+  inc a
   when false:
     if drawTimeout != nil:
       clearTimeout(drawTimeout)
