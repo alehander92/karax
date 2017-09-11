@@ -335,7 +335,8 @@ proc addEventHandler*(n: VNode; k: EventKind; action: EventHandler) =
   ## a ``redraw``.
   proc wrapper(ev: Event; n: VNode) =
     action(ev, n)
-    redraw()
+    if n.getAttr(cstring("data")) != cstring("1"):
+      redraw()
   addEventListener(n, k, wrapper)
 
 proc setOnHashChange*(action: proc (hashPart: cstring)) =
