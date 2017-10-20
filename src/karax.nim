@@ -73,7 +73,7 @@ proc wrapEvent(d: Node; n: VNode; k: EventKind; action: EventHandler) =
 template detach(n: VNode) = n.dom = nil
 template attach(n: Vnode) = n.dom = result
 
-proc vnodeToDom(n: VNode): Node =
+proc vnodeToDom*(n: VNode): Node =
   if n.kind == VNodeKind.text:
     result = document.createTextNode(n.text)
     attach n
