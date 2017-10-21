@@ -77,8 +77,7 @@ type
     oninput, ## An input value changes
     onlosecapture, ## An element loses its capture
     onfocus # An element in on focus
-    onchange # An element is changed
-
+    
     onkeyupenter, ## vdom extension: an input field received the ENTER key press
     onkeyuplater  ## vdom extension: a key was pressed and some time
                   ## passed (useful for on-the-fly text completions)
