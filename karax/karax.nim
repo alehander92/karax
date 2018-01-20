@@ -8,6 +8,9 @@ proc kout*[T](x: T) {.importc: "console.log", varargs, deprecated.}
   ## the preferred way of debugging karax applications. Now deprecated,
   ## you can now use ``system.echo`` instead.
 
+proc consoleTime*(label: cstring) {.importcpp: "console.time(#)".}
+proc consoleEnd*(label: cstring) {.importcpp: "console.timeEnd(#)".}
+
 type
   PatchKind = enum
     pkReplace, pkRemove, pkAppend, pkInsertBefore, pkDetach
@@ -51,6 +54,11 @@ var
                       ## if you have a local karax instance to use instead
                       ## in your 'buildHtml' statement, it needs to be named
                       ## 'kxi'.
+
+
+var a = 0
+var requested = false
+var afterRedraw*: proc: void
 
 proc setFocus*(n: VNode; enabled = true; kxi: KaraxInstance = kxi) =
   if enabled:
@@ -558,6 +566,7 @@ proc runDiff*(kxi: KaraxInstance; oldNode, newNode: VNode) =
   doAssert same(kxi.currentTree, document.getElementById(kxi.rootId))
 
 proc dodraw(kxi: KaraxInstance) =
+  requested = false
   if kxi.renderer.isNil: return
   let newtree = kxi.renderer()
   inc kxi.runCount
@@ -586,6 +595,9 @@ proc dodraw(kxi: KaraxInstance) =
   if not kxi.postRenderCallback.isNil:
     kxi.postRenderCallback()
 
+  if not afterRedraw.isNil:
+    afterRedraw()
+    afterRedraw = nil
   # now that it's part of the DOM, give it the focus:
   if kxi.toFocus != nil:
     kxi.toFocus.focus()
@@ -594,12 +606,17 @@ proc dodraw(kxi: KaraxInstance) =
     kxi.recursion = 0
     var total = 0
     echo "depth ", depth(kxi.currentTree, total), " total ", total
+  consoleEnd(cstring("redraw" & $(a - 1)))
 
 proc reqFrame(callback: proc()): int {.importc: "window.requestAnimationFrame".}
 proc cancelFrame(id: int) {.importc: "window.cancelAnimationFrame".}
 
 proc redraw*(kxi: KaraxInstance = kxi) =
   # we buffer redraw requests:
+  if requested:
+    return
+  consoleTime(cstring("redraw" & $a))
+  inc a
   when false:
     if drawTimeout != nil:
       clearTimeout(drawTimeout)
