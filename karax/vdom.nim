@@ -156,12 +156,16 @@ type
     # even index: key, odd index: value; done this way for memory efficiency:
     attrs: seq[kstring]
     events*: EventHandlers
+    lazy*: bool
+
     when false:
       hash*: Hash
       validHash*: bool
+
     style*: VStyle ## the style that should be applied to the virtual node.
     dom*: Node ## the attached real DOM node. Can be 'nil' if the virtual node
                ## is not part of the virtual DOM anymore.
+    noChange*: bool
 
   VComponent* = ref object of VNode ## The abstract class for every karax component.
     key*: VKey                      ## key that determines if two components are
@@ -295,9 +299,11 @@ proc tree*(kind: VNodeKind; attrs: openarray[(kstring, kstring)];
   result = tree(kind, kids)
   for a in attrs: result.setAttr(a[0], a[1])
 
+proc kout[T](x: T) {.importc: "console.log", varargs, deprecated.}
 when defined(js):
   proc text*(s: string): VNode = VNode(kind: VNodeKind.text, text: kstring(s), index: -1)
-proc text*(s: kstring): VNode = VNode(kind: VNodeKind.text, text: s, index: -1)
+proc text*(s: kstring): VNode = 
+  VNode(kind: VNodeKind.text, text: s, index: -1)
 
 when defined(js):
   proc verbatim*(s: string): VNode =
@@ -342,6 +348,8 @@ proc toString*(n: VNode; result: var string; indent: int) =
     result.add " " & $k & " = " & $v
   result.add ">\L"
   if n.kind == VNodeKind.text:
+    result.add n.text
+  elif n.kind == VNodeKind.verbatim:
     result.add n.text
   else:
     if n.text.len > 0:
@@ -449,10 +457,10 @@ proc add*(result: var string, n: VNode, indent = 0, indWidth = 2) =
       if n.len > 1:
         var noWhitespace = false
         for i in 0..<n.len:
-          if n[i].kind == VNodeKind.text:
+          if n[i].kind in {VNodeKind.text, VNodeKind.verbatim}:
             noWhitespace = true
             break
-
+          
         if noWhitespace:
           # for mixed leaves, we cannot output whitespace for readability,
           # because this would be wrong. For example: ``a<b>b</b>`` is

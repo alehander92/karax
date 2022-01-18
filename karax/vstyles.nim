@@ -251,7 +251,7 @@ proc setAttr*(s: VStyle; a, value: kstring) {.noSideEffect.} =
       s.add ""
       s.add ""
       # insertion point here, shift all remaining pairs by 2 indexes
-      for j in countdown(s.len-1, i+3, 2):
+      for j in countdown(s.len-1, i+3, 2): # i in our experiment
         s[j] = s[j-2]
         s[j-1] = s[j-3]
       s[i] = a

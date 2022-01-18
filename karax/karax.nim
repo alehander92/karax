@@ -1,14 +1,34 @@
 ## Karax -- Single page applications for Nim.
 
-import kdom, vdom, jstrutils, compact, jdict, vstyles
+import kdom, vdom, jstrutils, compact, jdict, vstyles, strformat
 
 export kdom.Event, kdom.Blob
 
-when defined(nimNoNil):
-  {.experimental: "notnil".}
+# when defined(nimNoNil):
+#   {.experimental: "notnil".}
+
+var inRequest = false
+var requestNumber = 0
+var ignoreNextRedraw* = false
+var forceNextRedraw* = false
+# var afterRedraws*: seq[proc: void] = @[]
+
+var diffIndex* = 0
+var karaxSilent* = true #false
 
 proc kout*[T](x: T) {.importc: "console.log", varargs.}
   ## The preferred way of debugging karax applications.
+
+proc consoleTime*(label: cstring) {.importcpp: "console.time(#)".}
+proc consoleEnd*(label: cstring) {.importcpp: "console.timeEnd(#)".}
+
+  
+template timeIt(label: untyped, handler: untyped): untyped =
+  if not karaxSilent:
+    consoleTime(cstring(`label`))
+  `handler`
+  if not karaxSilent:
+    consoleEnd(cstring(`label`))
 
 type
   PatchKind = enum
@@ -30,7 +50,7 @@ type
 
   KaraxInstance* = ref object ## underlying karax instance. Usually you don't have
                               ## know about this.
-    rootId: cstring
+    rootId: cstring #not nil
     renderer: proc (data: RouterData): VNode {.closure.}
     currentTree: VNode
     postRenderCallback: proc (data: RouterData)
@@ -44,8 +64,9 @@ type
     patchLenV: int
     runCount: int
     components: seq[ComponentPair]
-    surpressRedraws*: bool
+    supressRedraws*: bool
     byId: JDict[cstring, VNode]
+    afterRedraws*: seq[proc: void]
     when defined(stats):
       recursion: int
     orphans: JDict[cstring, bool]
@@ -152,11 +173,15 @@ proc getVNodeById*(id: cstring; kxi: KaraxInstance = kxi): VNode =
   if kxi.byId.contains(id):
     result = kxi.byId[id]
 
+
 proc toDom*(n: VNode; useAttachedNode: bool; kxi: KaraxInstance = nil): Node =
+  if n.isNil:
+    return document.createTextNode("")
   if useAttachedNode:
     if n.dom != nil:
       if n.id != nil: kxi.byId[n.id] = n
       return n.dom
+  
   if n.kind == VNodeKind.text:
     result = document.createTextNode(n.text)
     attach n
@@ -211,27 +236,31 @@ proc toDom*(n: VNode; useAttachedNode: bool; kxi: KaraxInstance = nil): Node =
   if not n.style.isNil: applyStyle(result, n.style)
 
 proc same(n: VNode, e: Node; nesting = 0): bool =
-  if kxi.orphans.contains(n.id): return true
-  if n.kind == VNodeKind.component:
-    result = same(VComponent(n).expanded, e, nesting+1)
-  elif n.kind == VNodeKind.verbatim:
-    result = true
-  elif n.kind == VNodeKind.vthunk or n.kind == VNodeKind.dthunk:
-    # we don't check these:
-    result = true
-  elif toTag[n.kind] == e.nodeName:
-    result = true
-    if n.kind != VNodeKind.text:
-      # BUGFIX: Microsoft's Edge gives the textarea a child containing the text node!
-      if e.len != n.len and n.kind != VNodeKind.textarea:
-        when defined(karaxDebug):
-          echo "expected ", n.len, " real ", e.len, " ", toTag[n.kind], " nesting ", nesting
-        return false
-      for i in 0 ..< n.len:
-        if not same(n[i], e[i], nesting+1): return false
-  else:
-    when defined(karaxDebug):
-      echo "VDOM: ", toTag[n.kind], " DOM: ", e.nodeName
+  # if kxi.orphans.contains(n.id): return true
+  # if n.kind == VNodeKind.component:
+  #   result = same(VComponent(n).expanded, e, nesting+1)
+  # elif n.kind == VNodeKind.verbatim:
+  #   result = true
+  # elif n.kind == VNodeKind.vthunk or n.kind == VNodeKind.dthunk:
+  #   # we don't check these:
+  #   result = true
+  # elif toTag[n.kind] == e.nodeName:
+  #   result = true
+  #   if n.kind != VNodeKind.text:
+  #     # BUGFIX: Microsoft's Edge gives the textarea a child containing the text node!
+  #     if e.len != n.len and n.kind != VNodeKind.textarea:
+  #       when defined(karaxDebug):
+  #         echo "expected ", n.len, " real ", e.len, " ", toTag[n.kind], " nesting ", nesting
+  #       return false
+  #     for i in 0 ..< n.len:
+  #       if not same(n[i], e[i], nesting+1): return false
+  # else:
+  #   when defined(karaxDebug):
+  #     echo "VDOM: ", toTag[n.kind], " DOM: ", e.nodeName
+  
+  true # TODO, we dont have components here, so is shape check needed
+  # hm, we have, but this seemed to work .. maybe it's not important
+
 
 proc replaceById(id: cstring; newTree: Node) =
   let x = document.getElementById(id)
@@ -240,7 +269,7 @@ proc replaceById(id: cstring; newTree: Node) =
 
 type
   EqResult = enum
-    componentsIdentical, different, similar, identical, usenewNode
+    componentsIdentical, different, similar, identical, usenewNode, freshRedraw
 
 when defined(profileKarax):
   type
@@ -256,6 +285,7 @@ when defined(profileKarax):
       echo i, " value: ", a[i]
 
 proc eq(a, b: VNode; recursive: bool): EqResult =
+  # return different
   if a.kind != b.kind:
     when defined(profileKarax): inc reasons[deKind]
     return different
@@ -270,7 +300,7 @@ proc eq(a, b: VNode; recursive: bool): EqResult =
     if a.text != b.text:
       when defined(profileKarax): inc reasons[deText]
       return different # similar
-  elif a.kind == VNodeKind.vthunk:
+  elif a.kind == VNodeKind.vthunk or a.kind == VNodeKind.dthunk: # dtunk? not in upstreaer here
     if a.text != b.text: return different
     if a.len != b.len: return different
     for i in 0..<a.len:
@@ -288,7 +318,7 @@ proc eq(a, b: VNode; recursive: bool): EqResult =
     if a.text != b.text:
       when defined(profileKarax): inc reasons[deComponent]
       return different
-    #if VComponent(a).key.isNil and VComponent(b).key.isNil:
+    # if VComponent(a).key.isNil and VComponent(b).key.isNil:
     #  when defined(profileKarax): inc reasons[deComponent]
     #  return different
     if VComponent(a).key != VComponent(b).key:
@@ -298,7 +328,11 @@ proc eq(a, b: VNode; recursive: bool): EqResult =
   #if:
   #  when defined(profileKarax): inc reasons[deClass]
   #  return different
-  if a.class != b.class or not eq(a.style, b.style) or not sameAttrs(a, b):
+  if a.class != b.class:
+    when defined(profileKarax): inc reasons[deClass]
+    return similar
+  if not eq(a.style, b.style) or not sameAttrs(a, b):
+  # if a.class != b.class or not eq(a.style, b.style) or not sameAttrs(a, b):
     when defined(profileKarax): inc reasons[deSimilar]
     return similar
 
@@ -423,7 +457,8 @@ proc applyPatch(kxi: KaraxInstance) =
         let x = VComponent(n)
         if x.onDetachImpl != nil: x.onDetachImpl(x)
       # XXX for some reason this causes assertion errors otherwise:
-      if not kxi.surpressRedraws: n.dom = nil
+      if not kxi.supressRedraws: n.dom = nil
+
   kxi.patchLen = 0
   for i in 0..<kxi.patchLenV:
     let p = kxi.patchesV[i]
@@ -496,7 +531,6 @@ proc diff(newNode, oldNode: VNode; parent, current: Node; kxi: KaraxInstance) =
 
     assert oldNode.kind == newNode.kind
     var commonPrefix = 0
-
     # compute common prefix:
     while commonPrefix < minLength:
       if eq(newNode[commonPrefix], oldNode[commonPrefix], true) == identical:
@@ -537,6 +571,10 @@ proc diff(newNode, oldNode: VNode; parent, current: Node; kxi: KaraxInstance) =
     detach(oldNode)
     kxi.addPatch(pkReplace, parent, current, newNode, nil)
   of usenewNode: doAssert(false, "eq returned usenewNode")
+  else:
+    discard
+  # of freshRedraw:
+    # return freshRedraw
   when defined(stats):
     dec kxi.recursion
 
@@ -550,6 +588,8 @@ proc applyComponents(kxi: KaraxInstance) =
   while i < kxi.components.len:
     let x = kxi.components[i].oldNode
     let newNode = kxi.components[i].newNode
+    # echo "component"
+    # kout newNode
     when defined(karaxDebug):
       echo "Processing component ", newNode.text, " changed impl set ", x.changedImpl != nil
     if x.changedImpl != nil and x.changedImpl(x, newNode):
@@ -658,6 +698,7 @@ proc dodraw(kxi: KaraxInstance) =
   let rdata = RouterData(hashPart: hashPart)
   let newtree = kxi.renderer(rdata)
   inc kxi.runCount
+  # echo kxi.rootId
   newtree.id = kxi.rootId
   kxi.toFocus = nil
   if kxi.currentTree == nil:
@@ -667,37 +708,87 @@ proc dodraw(kxi: KaraxInstance) =
     doAssert same(kxi.currentTree, document.getElementById(kxi.rootId))
     let olddom = document.getElementById(kxi.rootId)
     diff(newtree, kxi.currentTree, nil, olddom, kxi)
+    diffIndex = 0
+    if olddom.isNil:
+      echo "NIL BECOMES", kxi.rootId
+    else:
+      # echo "OK", kxi.rootId
+      # diff(nil, olddom, newtree, kxi.currentTree, kxi)
+
+      # echo res, diffIndex
+      # if res == freshRedraw:
+      # if true:
+        # let asdom = vnodeToDom(newtree, kxi)
+        # replaceById(kxi.rootID, asdom)
+      kxi.patchLen = 0
+      # kxi.components = @[]
+
+
+  kxi.currentTree = newTree
+
   when defined(profileKarax):
     echo "<<<<<<<<<<<<<<"
     echa reasons
-  applyComponents(kxi)
+  #timeIt("components" & $requestNumber):
+  #  applyComponents(kxi)
   when defined(profileKarax):
     echo "--------------"
     echa reasons
     echo ">>>>>>>>>>>>>>"
-  applyPatch(kxi)
-  kxi.currentTree = newtree
+  #timeIt("applyPatch" & $requestNumber):
+  #  applyPatch(kxi)
+  #  kxi.currentTree = newtree
   doAssert same(kxi.currentTree, document.getElementById(kxi.rootId))
 
   if not kxi.postRenderCallback.isNil:
     kxi.postRenderCallback(rdata)
+  # echo "after:", afterRedraws.len
+  while kxi.afterRedraws.len > 0:
+  # for afterRedraw in afterRedraws:
+    let afterRedraw = kxi.afterRedraws[0]
+    try:
+      # echo "after", kxi.rootId
+      afterRedraw()
+    except Exception as e:
+      kout e
+      echo getCurrentExceptionMsg()
+    finally:
+      kxi.afterRedraws = kxi.afterRedraws[1 .. ^1]
+      # echo kxi.afterRedraws.len
+      continue
+  # afterRedraws = @[]
 
   # now that it's part of the DOM, give it the focus:
   if kxi.toFocus != nil:
     kxi.toFocus.focus()
   kxi.rendering = false
+  kxi.renderId = 0
+  if not karaxSilent:
+    consoleEnd(cstring("redraw" & $requestNumber))
+  requestNumber += 1
+  inRequest = false
   when defined(stats):
     kxi.recursion = 0
     var total = 0
     echo "depth ", depth(kxi.currentTree, total), " total ", total
 
 proc redraw*(kxi: KaraxInstance = kxi) =
-  # we buffer redraw requests:
+  if ignoreNextRedraw and not forceNextRedraw and kxi.afterRedraws.len == 0:
+    ignoreNextRedraw = false
+    echo "no redraw: ", kxi.afterRedraws.len
+    return
+  forceNextRedraw = false
+  # inRequest = true
+  if not karaxSilent:
+    consoleTime(cstring("redraw" & $requestNumber))
   when false:
     if drawTimeout != nil:
       clearTimeout(drawTimeout)
     drawTimeout = setTimeout(dodraw, 30)
   elif true:
+    if kxi.isNil:
+      echo "kxi nil"
+      return
     if kxi.renderId == 0:
       kxi.renderId = reqFrame(proc () = kxi.dodraw)
   else:
@@ -717,6 +808,7 @@ proc setRenderer*(renderer: proc (data: RouterData): VNode,
   if document.getElementById(root).isNil:
     let msg = "Could not find a <div> with id=" & root &
               ". Karax needs it as its rendering target."
+    echo msg
     raise newException(Exception, $msg)
 
   result = KaraxInstance(rootId: root, renderer: renderer,
@@ -724,12 +816,14 @@ proc setRenderer*(renderer: proc (data: RouterData): VNode,
                          patches: newSeq[Patch](60),
                          patchesV: newSeq[PatchV](30),
                          components: @[],
-                         surpressRedraws: false,
+                         supressRedraws: false,
                          byId: newJDict[cstring, VNode](),
-                         orphans: newJDict[cstring, bool]())
-  kxi = result
-  window.onload = init
-  onhashChange = proc() = redraw()
+                         orphans: newJDict[cstring, bool](),
+                         afterRedraws: @[])
+  if kxi.isNil:
+    kxi = result
+    window.onload = init
+    onhashChange = proc() = redraw()
 
 proc setRenderer*(renderer: proc (): VNode, root: cstring = "ROOT",
                   clientPostRenderCallback: proc () = nil): KaraxInstance {.discardable.} =
@@ -761,9 +855,10 @@ proc setInitializer*(renderer: proc (data: RouterData): VNode, root: cstring = "
                         patches: newSeq[Patch](60),
                         patchesV: newSeq[PatchV](30),
                         components: @[],
-                        surpressRedraws: true,
+                        supressRedraws: true,
                         byId: newJDict[cstring, VNode](),
-                        orphans: newJDict[cstring, bool]())
+                        orphans: newJDict[cstring, bool](),
+                        afterRedraws: @[])
   kxi = result
   window.onload = init
 
@@ -776,7 +871,19 @@ proc addEventHandler*(n: VNode; k: EventKind; action: EventHandler;
   ## a ``redraw``.
   proc wrapper(ev: Event; n: VNode) =
     action(ev, n)
-    if not kxi.surpressRedraws: redraw(kxi)
+    if not kxi.supressRedraws: redraw(kxi)
+  addEventListener(n, k, wrapper)
+
+proc addEventHandler*(n: VNode; k: EventKind; action: proc(e: KeyboardEvent, v: VNode);
+                      kxi: KaraxInstance = kxi) =
+  ## Implements the foundation of Karax's event management.
+  ## Karax DSL transforms ``tag(onEvent = handler)`` to
+  ## ``tempNode.addEventHandler(tagNode, EventKind.onEvent, wrapper)``
+  ## where ``wrapper`` calls the passed ``action`` and then triggers
+  ## a ``redraw``.
+  proc wrapper(ev: Event; n: VNode) =
+    action(cast[KeyboardEvent](ev), n)
+    if not kxi.supressRedraws: redraw(kxi)
   addEventListener(n, k, wrapper)
 
 proc addEventHandler*(n: VNode; k: EventKind; action: proc();
@@ -788,7 +895,7 @@ proc addEventHandler*(n: VNode; k: EventKind; action: proc();
   ## a ``redraw``.
   proc wrapper(ev: Event; n: VNode) =
     action()
-    if not kxi.surpressRedraws: redraw(kxi)
+    if not kxi.supressRedraws: redraw(kxi)
   addEventListener(n, k, wrapper)
 
 proc setOnHashChange*(action: proc (hashPart: cstring)) {.deprecated: "use setRenderer instead".} =

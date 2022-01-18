@@ -30,7 +30,6 @@ proc getName(n: NimNode): string =
   of nnkOpenSymChoice, nnkClosedSymChoice:
     result = getName(n[0])
   else:
-    #echo repr n
     expectKind(n, nnkIdent)
 
 proc toKstring(n: NimNode): NimNode =
